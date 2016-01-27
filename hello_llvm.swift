@@ -25,34 +25,63 @@ let b = LLVMGetParam(sumFunction, 1)
 let temp = LLVMBuildAdd(builder, a, b, "temp")
 LLVMBuildRet(builder, temp)
 
-LLVMDumpModule(module)
+LLVMLinkInMCJIT()
+LLVMInitializeNativeTarget()
+LLVMInitializeNativeAsmPrinter()
 
-let engine = UnsafeMutablePointer<LLVMExecutionEngineRef>.alloc(alignof(LLVMExecutionEngineRef))
-var error =  UnsafeMutablePointer<UnsafeMutablePointer<Int8>>.alloc(alignof(UnsafeMutablePointer<Int8>))
+func runSumFunction(a: Int, _ b: Int) -> Int {
+  let functionType = LLVMFunctionType(returnType, nil, 0, 0)
+  let wrapperFunction = LLVMAddFunction(module, "", functionType)
+  defer {
+    LLVMDeleteFunction(wrapperFunction)
+  }
 
-LLVMLinkInInterpreter()
+  let entryBlock = LLVMAppendBasicBlock(wrapperFunction, "entry")
 
-if LLVMCreateInterpreterForModule(engine, module, error) != 0 {
-  print("can't initialize engine: \(String.fromCString(error.memory)!)")
-	// TODO: cleanup all allocated memory ;)
-  exit(1)
+  let builder = LLVMCreateBuilder()
+  LLVMPositionBuilderAtEnd(builder, entryBlock)
+
+  let argumentsCount = 2
+  var argumentValues = [LLVMValueRef]()
+  
+  argumentValues.append(LLVMConstInt(int32, UInt64(a), 0))
+  argumentValues.append(LLVMConstInt(int32, UInt64(b), 0))
+
+  let argumentsPointer = UnsafeMutablePointer<LLVMValueRef>.alloc(strideof(LLVMValueRef) * argumentsCount)
+  defer {
+    argumentsPointer.dealloc(strideof(LLVMValueRef) * argumentsCount)
+  }
+  argumentsPointer.initializeFrom(argumentValues)
+
+  let callTemp = LLVMBuildCall(builder, 
+                               sumFunction,
+                               argumentsPointer,
+                               UInt32(argumentsCount), "sum_temp")
+  LLVMBuildRet(builder, callTemp)
+
+  let executionEngine = UnsafeMutablePointer<LLVMExecutionEngineRef>.alloc(strideof(LLVMExecutionEngineRef))
+  let error = UnsafeMutablePointer<UnsafeMutablePointer<Int8>>.alloc(strideof(UnsafeMutablePointer<Int8>))
+
+  defer {
+    error.dealloc(strideof(UnsafeMutablePointer<Int8>))
+    executionEngine.dealloc(strideof(LLVMExecutionEngineRef))
+  }
+
+  let res = LLVMCreateExecutionEngineForModule(executionEngine, module, error)
+  if res != 0 {
+    let msg = String.fromCString(error.memory)
+    print("\(msg)")
+    exit(1)
+  }
+
+  let value = LLVMRunFunction(executionEngine.memory, wrapperFunction, 0, nil)
+  let result = LLVMGenericValueToInt(value, 0)
+  return Int(result)
 }
 
-let x: UInt64 = 10
-let y: UInt64 = 25
+print("\(runFunction(5, 6))")
+print("\(runFunction(7, 142))")
+print("\(runFunction(557, 1024))")
 
-let args = [LLVMCreateGenericValueOfInt(int32, x, 0), 
-            LLVMCreateGenericValueOfInt(int32, y, 1)]
-
-var argsRef = UnsafeMutablePointer<LLVMTypeRef>.alloc(args.count)
-argsRef.initializeFrom(args)
-
-let result = LLVMRunFunction(engine.memory, sumFunction, UInt32(args.count), argsRef)
-
-print("\(x) + \(y) = \(LLVMGenericValueToInt(result, 0))")
-
-argsRef.dealloc(args.count)
-
-paramTypesRef.dealloc(paramTypes.count)
 LLVMDisposeModule(module)
 
